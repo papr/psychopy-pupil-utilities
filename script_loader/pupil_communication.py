@@ -1,0 +1,136 @@
+import os, sys, platform, time, logging
+from uuid import uuid4
+from collections import namedtuple
+if platform.system() == 'Darwin' and getattr(sys, 'frozen', False):
+	from billiard import Process, Pipe, forking_enable
+	forking_enable(0)
+else:
+	from multiprocessing import Process, Pipe
+
+logger = logging.getLogger("pupil_communication")
+logger.setLevel(logging.DEBUG)
+
+class PupilCommunication:
+	def __init__(self, pipe):
+		self.pipe = pipe
+		self.tasks = []
+		self.answers = {}
+
+	def __create_finish_callback(self,task_id,blocking=False):
+		self.tasks.append(task_id)
+		self.answers[task_id] = None
+
+		def finished_callback():
+			'''
+			poll all available messages and return finish state
+			'''
+
+			# Create named tuple for returning multiple values
+			Response = namedtuple('FinishedCallbackResponse',['finished','answer'])
+
+			# check if task is done and answer is still unprocessed
+			# return immediatly if True
+			answer = None
+			if not task_id in self.tasks:
+				if task_id in self.answers:
+					answer = self.answers[task_id]
+					del self.answers[task_id]
+
+				return Response(True, answer)
+
+			# loop runs until specific task was answered
+			while self.pipe and (self.pipe.poll() or blocking):
+				msg = self.pipe.recv()
+				resp_id = msg['id']
+				
+				answer = None
+				# Test if msg has answer key
+				if 'answer' in msg:
+					answer = msg['answer']
+
+				if resp_id in self.tasks:
+					self.tasks.remove(resp_id)
+					self.answers[resp_id] = answer
+				if resp_id == task_id:
+					del self.answers[resp_id]
+					break
+				# Reset answer
+				answer = None
+			return Response(not task_id in self.tasks, answer)
+
+		return finished_callback
+
+	def trigger(self,frameid=None,context=None):
+		'''trigger
+		'''
+		now = time.time()
+		msg = {
+			'cmd':'trigger',
+			'timestamp':now,
+			'frameid':None,
+			'context':None
+		}
+		if frameid:
+			msg['frameid'] = frameid
+		if context:
+			msg['context'] = context
+		try:
+			self.pipe.send(msg)
+		except AttributeError as e:
+			logger.error('trigger<%s,%s>: %s'%(frameid,context,e))
+		except ValueError as e:
+			msg['context'] = None
+			logger.error('trigger<%s,%s>: %s'%(frameid,context,e))
+			self.pipe.send(msg)
+		except Exception as e:
+			logger.debug(e)
+
+		return None
+
+	def calibrate(self,blocking=False,context=None):
+		'''calibrate
+		Starts calibration.
+		Returns finished_callback which returns True
+			if the calibration has finished
+		blocking decides if finished_callback blocks until done or not
+		'''
+
+		task_id = uuid4()
+		cb = self.__create_finish_callback(task_id,blocking)
+
+		now = time.time()
+		msg = {
+			'cmd':'calibrate',
+			'timestamp':now,
+			'id': task_id,
+			'context':None
+		}
+		if context:
+			msg['context'] = context
+
+		try:
+			self.pipe.send(msg)
+		except AttributeError as e:
+			logger.error('calibrate<%s,%s>: %s'%(blocking,context,e))
+		except ValueError as e:
+			msg['context'] = None
+			logger.error('calibrate<%s,%s>: %s'%(blocking,context,e))
+			self.pipe.send(msg)
+		except Exception as e:
+			logger.warning(e)
+
+		return cb
+
+pupil_helper = None
+
+def main(script, communication):
+	global pupil_helper
+	pupil_helper = PupilCommunication(communication)
+	head, tail = os.path.split(script)
+	sys.path.append(head)
+	name, ext = tail.rsplit('.',1)
+	__import__(name)
+	# try:
+	# 	__import__(name)
+	# except Exception as e:
+	# 	logger.error('import error (%s): %s'%(tail,e))
