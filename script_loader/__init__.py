@@ -1,4 +1,4 @@
-import sys, os, platform, time, logging
+import sys, os, platform, time, logging, colorlog
 
 from pupil_communication import main as pupil_communication_main
 
@@ -7,8 +7,27 @@ from plugin import Plugin
 
 __version__ = '0.0.2'
 
-import logging
-logger = logging.getLogger(__name__)
+logger = colorlog.getLogger(__name__)
+logger.propagate = False
+logger.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logger.level)
+ch.setFormatter(colorlog.ColoredFormatter(
+	#"%(log_color)s%(levelname)-8s%(reset)s %(blue)s%(message)s",
+	"WORLD Process [%(log_color)s%(levelname)s%(reset)s] %(name)s : %(message)s",
+	datefmt=None,
+	reset=True,
+	log_colors={
+		'DEBUG': 'cyan',
+		'INFO': 'green',
+		'WARNING': 'yellow',
+		'ERROR': 'red',
+		'CRITICAL': 'red,bg_white',
+	},
+	secondary_log_colors={},
+	style='%'
+))
+logger.addHandler(ch)
 
 if platform.system() == 'Darwin' and getattr(sys, 'frozen', False):
 	from billiard import Process, Pipe, Value, forking_enable
@@ -49,6 +68,12 @@ class Script_Loader(Plugin):
 		self.running = False
 		self.script_process = None
 		self.script_pipe = None
+
+		# None, if action is not running. task_id or [task_id] if running
+		# Is list if action allows multiple executions in parallel
+		self.current_actions = {
+			'calibration': None
+		}
 
 #-- uiful --
 
@@ -106,6 +131,23 @@ class Script_Loader(Plugin):
 
 	def update(self,frame,events):
 		self.communicate()
+	
+	def on_notify(self,notification):
+		if (notification['subject'] == 'cal_finished' and 
+			self.current_actions['calibration']):
+			task_id = self.current_actions['calibration']
+			self.current_actions['calibration'] = None
+			logger.debug('Received cal_finished notification [%s]'%task_id)
+			resp = {
+				'id': task_id,
+				'successful': notification['successful'],
+				'error_code': notification['error_code'],
+				'answer': notification['reason']
+			}
+			try:
+				self.script_pipe.send(resp)
+			except Exception as e:
+				logger.error('Sending response failed: %s'%e)
 
 	def select_script(self,script):
 		if script == 'No script selected':
@@ -141,7 +183,7 @@ class Script_Loader(Plugin):
 		self.sync_buttons()
 	
 	def communicate(self):
-		while self.script_pipe and self.script_pipe.poll():
+		if self.running and self.script_pipe and self.script_pipe.poll():
 			#block and listen for commands from world process.
 			try:
 				msg = self.script_pipe.recv()
@@ -156,12 +198,7 @@ class Script_Loader(Plugin):
 					logger.debug("trigger (%f): %s [%s]"%(trig,frameid,context))
 				elif cmd == 'calibrate':
 					task_id = msg['id']
-					time.sleep(1)
-					resp = {
-						'id': task_id,
-						'answer': time.time()
-					}
-					self.script_pipe.send(resp)
+					self.calibrate(task_id)
 
 			except EOFError:
 				logger.debug("Child process closed pipe at %f"%time.time())
@@ -183,6 +220,20 @@ class Script_Loader(Plugin):
 				self.script_pipe.close()
 				self.script_pipe = None
 			self.sync_buttons()
+
+	def calibrate(self,task_id):
+		if self.current_actions['calibration']:
+			resp = {
+				'id': task_id,
+				'answer': 'Warning: Calibration already running.'
+			}
+			self.script_pipe.send(resp)
+		else:
+			self.current_actions['calibration'] = task_id
+			self.notify_all({
+				'subject': 'cal_should_start'
+			})
+
 
 	def list_custom_scripts(self,script_dir):
 		custom_scripts = []

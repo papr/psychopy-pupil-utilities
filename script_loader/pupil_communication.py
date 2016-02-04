@@ -1,4 +1,4 @@
-import os, sys, platform, time, logging
+import os, sys, platform, time, logging, colorlog
 from uuid import uuid4
 from collections import namedtuple
 if platform.system() == 'Darwin' and getattr(sys, 'frozen', False):
@@ -7,8 +7,27 @@ if platform.system() == 'Darwin' and getattr(sys, 'frozen', False):
 else:
 	from multiprocessing import Process, Pipe
 
-logger = logging.getLogger("pupil_communication")
+logger = colorlog.getLogger('pupil_communication')
+logger.propagate = False
 logger.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logger.level)
+ch.setFormatter(colorlog.ColoredFormatter(
+	#"%(log_color)s%(levelname)-8s%(reset)s %(blue)s%(message)s",
+	"WORLD Process [%(log_color)s%(levelname)s%(reset)s] %(name)s : %(message)s",
+	datefmt=None,
+	reset=True,
+	log_colors={
+		'DEBUG': 'cyan',
+		'INFO': 'green',
+		'WARNING': 'yellow',
+		'ERROR': 'red',
+		'CRITICAL': 'red,bg_white',
+	},
+	secondary_log_colors={},
+	style='%'
+))
+logger.addHandler(ch)
 
 class PupilCommunication:
 	def __init__(self, pipe):
@@ -35,7 +54,7 @@ class PupilCommunication:
 				if task_id in self.answers:
 					answer = self.answers[task_id]
 					del self.answers[task_id]
-
+				logger.debug('Task %s already done'%task_id)
 				return Response(True, answer)
 
 			# loop runs until specific task was answered
@@ -56,6 +75,7 @@ class PupilCommunication:
 					break
 				# Reset answer
 				answer = None
+				logger.debug("Task [%s]: %s"%(resp_id, answer))
 			return Response(not task_id in self.tasks, answer)
 
 		return finished_callback
