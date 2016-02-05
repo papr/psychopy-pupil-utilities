@@ -1,4 +1,4 @@
-import os, sys, platform, time, logging, colorlog
+import os, sys, platform, logging, colorlog
 from uuid import uuid4
 from collections import namedtuple
 if platform.system() == 'Darwin' and getattr(sys, 'frozen', False):
@@ -30,7 +30,8 @@ ch.setFormatter(colorlog.ColoredFormatter(
 logger.addHandler(ch)
 
 class PupilCommunication:
-	def __init__(self, pipe):
+	def __init__(self, g_pool, pipe):
+		self.g_pool = g_pool
 		self.pipe = pipe
 		self.tasks = []
 		self.answers = {}
@@ -83,7 +84,7 @@ class PupilCommunication:
 	def trigger(self,frameid=None,context=None):
 		'''trigger
 		'''
-		now = time.time()
+		now = self.g_pool.capture.get_timestamp()
 		msg = {
 			'cmd':'trigger',
 			'timestamp':now,
@@ -118,7 +119,7 @@ class PupilCommunication:
 		task_id = uuid4()
 		cb = self.__create_finish_callback(task_id,blocking)
 
-		now = time.time()
+		now = self.g_pool.capture.get_timestamp()
 		msg = {
 			'cmd':'calibrate',
 			'timestamp':now,
@@ -143,14 +144,14 @@ class PupilCommunication:
 
 pupil_helper = None
 
-def main(script, communication):
+def main(g_pool, script, communication):
 	global pupil_helper
-	pupil_helper = PupilCommunication(communication)
+	pupil_helper = PupilCommunication(g_pool, communication)
 	head, tail = os.path.split(script)
 	sys.path.append(head)
 	name, ext = tail.rsplit('.',1)
-	__import__(name)
-	# try:
-	# 	__import__(name)
-	# except Exception as e:
-	# 	logger.error('import error (%s): %s'%(tail,e))
+	#__import__(name)
+	try:
+		__import__(name)
+	except Exception as e:
+		logger.error('import error (%s): %s'%(tail,e))

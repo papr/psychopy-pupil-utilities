@@ -1,4 +1,4 @@
-import sys, os, platform, time, logging, colorlog
+import sys, os, platform, logging, colorlog
 
 from pupil_communication import main as pupil_communication_main
 
@@ -137,7 +137,6 @@ class Script_Loader(Plugin):
 			self.current_actions['calibration']):
 			task_id = self.current_actions['calibration']
 			self.current_actions['calibration'] = None
-			logger.debug('Received cal_finished notification [%s]'%task_id)
 			resp = {
 				'id': task_id,
 				'successful': notification['successful'],
@@ -175,7 +174,7 @@ class Script_Loader(Plugin):
 		else:
 			script_path = os.path.join(self.script_dir,script)			
 			cmd_script_end,self.script_pipe = Pipe(True)
-			self.script_process = Process(target=pupil_communication_main,args=(script_path,cmd_script_end))
+			self.script_process = Process(target=pupil_communication_main,args=(self.g_pool,script_path,cmd_script_end))
 			self.script_process.start()
 			cmd_script_end.close()
 			self.running = True
@@ -201,7 +200,7 @@ class Script_Loader(Plugin):
 					self.calibrate(task_id)
 
 			except EOFError:
-				logger.debug("Child process closed pipe at %f"%time.time())
+				logger.debug("Child process closed pipe at %f"%self.g_pool.capture.get_timestamp())
 				logger.info('%s finished running'%self.selected_script)
 				self.running = False
 			except KeyboardInterrupt:
