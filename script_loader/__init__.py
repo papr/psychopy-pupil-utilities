@@ -1,6 +1,16 @@
 import sys, os, platform, logging, colorlog
 
 from pupil_communication import main as pupil_communication_main
+from const import (
+	START_CALIBRATION,
+	STOP_CALIBRATION,
+	START_RECORDING,
+	STOP_RECORDING,
+	TRIGGER,
+	ACTION_CALIBRATION,
+	ACTION_RECORDING,
+	EXIT
+)
 
 from pyglui import ui
 from plugin import Plugin
@@ -30,10 +40,10 @@ ch.setFormatter(colorlog.ColoredFormatter(
 logger.addHandler(ch)
 
 if platform.system() == 'Darwin' and getattr(sys, 'frozen', False):
-	from billiard import Process, Pipe, Value, forking_enable
+	from billiard import Process, Pipe, Queue, Value, forking_enable
 	forking_enable(0)
 else:
-	from multiprocessing import Process, Pipe
+	from multiprocessing import Process, Pipe, Queue
 
 class Script_Loader(Plugin):
 	"""Script Loader Plugin
@@ -68,11 +78,13 @@ class Script_Loader(Plugin):
 		self.running = False
 		self.script_process = None
 		self.script_pipe = None
+		self.event_queue = None
 
 		# None, if action is not running. task_id or [task_id] if running
 		# Is list if action allows multiple executions in parallel
 		self.current_actions = {
-			'calibration': None
+			ACTION_CALIBRATION: None,
+			ACTION_RECORDING: None
 		}
 
 #-- uiful --
@@ -131,22 +143,60 @@ class Script_Loader(Plugin):
 
 	def update(self,frame,events):
 		self.communicate()
+		if self.event_queue and not self.event_queue.full():
+			try:
+				self.event_queue.put_nowait(events)
+			except Queue.Full:
+				pass
+			except IOError:
+				# Broken pipe
+				self.event_queue = None
+			except Exception as e:
+				logger.error('Sending events failed: %s'%e)
 	
 	def on_notify(self,notification):
-		if (notification['subject'] == 'cal_finished' and 
-			self.current_actions['calibration']):
-			task_id = self.current_actions['calibration']
-			self.current_actions['calibration'] = None
-			resp = {
-				'id': task_id,
-				'successful': notification['successful'],
-				'error_code': notification['error_code'],
-				'answer': notification['reason']
-			}
-			try:
-				self.script_pipe.send(resp)
-			except Exception as e:
-				logger.error('Sending response failed: %s'%e)
+		if self.current_actions[ACTION_CALIBRATION]:
+
+			resp = None
+			task_id = self.current_actions[ACTION_CALIBRATION]
+			if notification['subject'] == 'calibration_successful':
+				resp = {
+					'id': task_id,
+					'successful': True,
+					'answer': None
+				}
+
+			elif notification['subject'] == 'calibration_failed':
+				resp = {
+					'id': task_id,
+					'successful': False,
+					'answer': notification['reason']
+				}
+
+			if resp and self.script_pipe:
+				self.current_actions[ACTION_CALIBRATION] = None
+				try:
+					self.script_pipe.send(resp)
+				except Exception as e:
+					logger.error('Sending cal. response failed: %s'%e)
+
+		if self.current_actions[ACTION_RECORDING]:
+
+			resp = None
+			task_id = self.current_actions[ACTION_RECORDING]
+			if notification['subject'] == 'rec_stopped':
+				resp = {
+					'id': task_id,
+					'successful': True,
+					'answer': notification.get('rec_path','No recording path returned')
+				}
+
+			if resp and self.script_pipe:
+				self.current_actions[ACTION_RECORDING] = None
+				try:
+					self.script_pipe.send(resp)
+				except Exception as e:
+					logger.error('Sending rec. response failed: %s'%e)
 
 	def select_script(self,script):
 		if script == 'No script selected':
@@ -174,9 +224,17 @@ class Script_Loader(Plugin):
 		else:
 			script_path = os.path.join(self.script_dir,script)			
 			cmd_script_end,self.script_pipe = Pipe(True)
-			self.script_process = Process(target=pupil_communication_main,args=(self.g_pool,script_path,cmd_script_end))
+			self.event_queue = Queue()
+			
+			self.script_process = Process(
+				target=pupil_communication_main,
+				args=(self.g_pool, script_path, cmd_script_end, self.event_queue)
+			)
 			self.script_process.start()
+			
 			cmd_script_end.close()
+			#cmd_event_end.close()
+
 			self.running = True
 			logger.info('Starting %s'%script)
 		self.sync_buttons()
@@ -187,17 +245,35 @@ class Script_Loader(Plugin):
 			try:
 				msg = self.script_pipe.recv()
 				cmd = msg['cmd']
-				if cmd == 'Exit':
+				if cmd == EXIT:
 					self.running = False
 					logger.info('%s finished running'%self.selected_script)
-				elif cmd == 'trigger':
+
+				# trigger
+				elif cmd == TRIGGER:
 					trig = msg['timestamp']
 					frameid = msg['frameid']
 					context = msg['context']
-					logger.debug("trigger (%f): %s [%s]"%(trig,frameid,context))
-				elif cmd == 'calibrate':
-					task_id = msg['id']
-					self.calibrate(task_id)
+					self.on_trigger(trig, frameid, context)
+				
+				# calibration
+				elif cmd == START_CALIBRATION:
+					task_id = msg.get('id',None)
+					self.on_start_calibration(task_id)
+				elif cmd == STOP_CALIBRATION:
+					self.on_stop_calibration()
+				
+				# recording
+				elif cmd == START_RECORDING:
+					task_id = msg.get('id',None)
+					session_name = msg.get('context','Script_Loader_Session')
+					self.on_start_recording(task_id,session_name)
+				elif cmd == STOP_RECORDING:
+					self.on_stop_recording()
+				
+				else:
+					logger.warning('Received unknown command \'%s\''%cmd)
+
 
 			except EOFError:
 				logger.debug("Child process closed pipe at %f"%self.g_pool.capture.get_timestamp())
@@ -218,21 +294,57 @@ class Script_Loader(Plugin):
 			if self.script_pipe:
 				self.script_pipe.close()
 				self.script_pipe = None
+			if self.event_queue:
+				self.event_queue.close()
+				self.event_queue.join_thread()
+				self.event_queue = None
 			self.sync_buttons()
 
-	def calibrate(self,task_id):
-		if self.current_actions['calibration']:
+	def on_trigger(self, timestamp, frameid, context):
+		logger.debug("trigger (%f): %s [%s]"%(timestamp,frameid,context))
+
+	def on_start_recording(self, task_id, session_name):
+		if self.current_actions[ACTION_RECORDING]:
+			resp = {
+				'id': task_id,
+				'answer': 'Warning: Recording already running.'
+			}
+			self.script_pipe.send(resp)
+		else:
+			self.current_actions[ACTION_RECORDING] = task_id
+			self.notify_all({
+				'subject': 'rec_started',
+				'source': 'Script_Loader',
+				'session_name': session_name
+			})
+			logger.debug('on_start_cal: %s'%task_id)
+
+	def on_stop_recording(self):
+		logger.debug('on_stop_rec: %s'%self.current_actions[ACTION_RECORDING])
+		self.notify_all({
+			'subject': 'rec_stopped',
+			'source': 'Script_Loader'
+		})
+
+	def on_start_calibration(self,task_id):
+		if self.current_actions[ACTION_CALIBRATION]:
 			resp = {
 				'id': task_id,
 				'answer': 'Warning: Calibration already running.'
 			}
 			self.script_pipe.send(resp)
 		else:
-			self.current_actions['calibration'] = task_id
+			self.current_actions[ACTION_CALIBRATION] = task_id
 			self.notify_all({
 				'subject': 'cal_should_start'
 			})
+			logger.debug('on_start_cal: %s'%task_id)
 
+	def on_stop_calibration(self):
+		logger.debug('on_stop_cal: %s'%self.current_actions[ACTION_CALIBRATION])
+		self.notify_all({
+			'subject': 'cal_should_stop'
+		})
 
 	def list_custom_scripts(self,script_dir):
 		custom_scripts = []
