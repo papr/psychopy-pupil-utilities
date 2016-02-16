@@ -2,14 +2,25 @@ import sys, os, platform, logging, colorlog
 
 from pupil_communication import main as pupil_communication_main
 from const import (
+	# commands
 	START_CALIBRATION,
 	STOP_CALIBRATION,
 	START_RECORDING,
 	STOP_RECORDING,
 	TRIGGER,
+	
+	# concurrent action identifier
 	ACTION_CALIBRATION,
 	ACTION_RECORDING,
-	EXIT
+	
+	EXIT,
+
+	# callback statuscodes
+	CBSC_CALIBRATION_SUCCESSFULL,
+	CBSC_CALIBRATION_FAILED,
+	CBSC_RECORDING_STARTED,
+	CBSC_RECORDING_STOPPED,
+	CBSC_PROCEDURE_ALREADY_INITIATED
 )
 
 from pyglui import ui
@@ -142,7 +153,7 @@ class Script_Loader(Plugin):
 		self.stop_button.read_only = not self.running
 
 	def update(self,frame,events):
-		self.communicate()
+		self.pollCommandPipe()
 		if self.event_queue and not self.event_queue.full():
 			try:
 				self.event_queue.put_nowait(events)
@@ -162,19 +173,23 @@ class Script_Loader(Plugin):
 			if notification['subject'] == 'calibration_successful':
 				resp = {
 					'id': task_id,
-					'successful': True,
-					'answer': None
+					'status': 'calibration successful',
+					'statusCode': CBSC_CALIBRATION_SUCCESSFULL,
+					'result': None
 				}
 
 			elif notification['subject'] == 'calibration_failed':
 				resp = {
 					'id': task_id,
-					'successful': False,
-					'answer': notification['reason']
+					'status': 'calibration failed',
+					'statusCode': CBSC_CALIBRATION_FAILED,
+					'result': notification['reason']
 				}
 
 			if resp and self.script_pipe:
-				self.current_actions[ACTION_CALIBRATION] = None
+				# cleanup
+				if resp['statusCode'] <= 0:
+					self.current_actions[ACTION_CALIBRATION] = None
 				try:
 					self.script_pipe.send(resp)
 				except Exception as e:
@@ -184,15 +199,28 @@ class Script_Loader(Plugin):
 
 			resp = None
 			task_id = self.current_actions[ACTION_RECORDING]
-			if notification['subject'] == 'rec_stopped':
+			if (notification['subject'] == 'rec_stopped' and 
+					notification.get('source',None) != 'Script_Loader'):
 				resp = {
 					'id': task_id,
-					'successful': True,
-					'answer': notification.get('rec_path','No recording path returned')
+					'status': 'recording stopped',
+					'statusCode': CBSC_RECORDING_STOPPED,
+					'result': notification.get('rec_path','No recording path returned')
+				}
+			elif (notification['subject'] == 'rec_started' and 
+					notification.get('source',None) != 'Script_Loader'):
+
+				resp = {
+					'id': task_id,
+					'status': 'recording started',
+					'statusCode': CBSC_RECORDING_STARTED,
+					'result': notification.get('rec_path','No recording path returned')
 				}
 
 			if resp and self.script_pipe:
-				self.current_actions[ACTION_RECORDING] = None
+				# cleanup
+				if resp['statusCode'] <= 0:
+					self.current_actions[ACTION_RECORDING] = None
 				try:
 					self.script_pipe.send(resp)
 				except Exception as e:
@@ -239,7 +267,7 @@ class Script_Loader(Plugin):
 			logger.info('Starting %s'%script)
 		self.sync_buttons()
 	
-	def communicate(self):
+	def pollCommandPipe(self):
 		if self.running and self.script_pipe and self.script_pipe.poll():
 			#block and listen for commands from world process.
 			try:
@@ -307,7 +335,9 @@ class Script_Loader(Plugin):
 		if self.current_actions[ACTION_RECORDING]:
 			resp = {
 				'id': task_id,
-				'answer': 'Warning: Recording already running.'
+				'status': 'Warning: Recording already running.',
+				'statusCode': CBSC_PROCEDURE_ALREADY_INITIATED,
+				'result': None
 			}
 			self.script_pipe.send(resp)
 		else:
@@ -317,10 +347,10 @@ class Script_Loader(Plugin):
 				'source': 'Script_Loader',
 				'session_name': session_name
 			})
-			logger.debug('on_start_cal: %s'%task_id)
+			#logger.debug('on_start_rec: %s'%task_id)
 
 	def on_stop_recording(self):
-		logger.debug('on_stop_rec: %s'%self.current_actions[ACTION_RECORDING])
+		#logger.debug('on_stop_rec: %s'%self.current_actions[ACTION_RECORDING])
 		self.notify_all({
 			'subject': 'rec_stopped',
 			'source': 'Script_Loader'
@@ -330,7 +360,9 @@ class Script_Loader(Plugin):
 		if self.current_actions[ACTION_CALIBRATION]:
 			resp = {
 				'id': task_id,
-				'answer': 'Warning: Calibration already running.'
+				'status': 'Warning: Calibration already running.',
+				'statusCode': CBSC_PROCEDURE_ALREADY_INITIATED,
+				'result': None
 			}
 			self.script_pipe.send(resp)
 		else:
@@ -338,10 +370,10 @@ class Script_Loader(Plugin):
 			self.notify_all({
 				'subject': 'cal_should_start'
 			})
-			logger.debug('on_start_cal: %s'%task_id)
+			#logger.debug('on_start_cal: %s'%task_id)
 
 	def on_stop_calibration(self):
-		logger.debug('on_stop_cal: %s'%self.current_actions[ACTION_CALIBRATION])
+		#logger.debug('on_stop_cal: %s'%self.current_actions[ACTION_CALIBRATION])
 		self.notify_all({
 			'subject': 'cal_should_stop'
 		})

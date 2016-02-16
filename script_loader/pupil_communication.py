@@ -8,14 +8,25 @@ else:
 	from multiprocessing import Process, Pipe
 
 from const import (
+	# commands
 	START_CALIBRATION,
 	STOP_CALIBRATION,
 	START_RECORDING,
 	STOP_RECORDING,
 	TRIGGER,
+	
+	# concurrent action identifier
 	ACTION_CALIBRATION,
 	ACTION_RECORDING,
-	EXIT
+	
+	EXIT,
+
+	# callback statuscodes
+	CBSC_STATUS_UNSPECIFIED,
+	CBSC_CALIBRATION_SUCCESSFULL,
+	CBSC_CALIBRATION_FAILED,
+	CBSC_RECORDING_STARTED,
+	CBSC_RECORDING_STOPPED
 )
 
 logger = colorlog.getLogger('pupil_communication')
@@ -25,7 +36,7 @@ ch = logging.StreamHandler()
 ch.setLevel(logger.level)
 ch.setFormatter(colorlog.ColoredFormatter(
 	#"%(log_color)s%(levelname)-8s%(reset)s %(blue)s%(message)s",
-	"WORLD Process [%(log_color)s%(levelname)s%(reset)s] %(name)s : %(message)s",
+	"WORLD Process [%(log_color)s%(levelname)s%(reset)s] %(name)s: %(message)s",
 	datefmt=None,
 	reset=True,
 	log_colors={
@@ -41,60 +52,121 @@ ch.setFormatter(colorlog.ColoredFormatter(
 logger.addHandler(ch)
 
 class PupilCommunication:
+	'''PupilCommunication
+	'''
+
+	'''StatusCallbackResponse
+	changed: BOOL, True if status has changed
+	status: STRING, new status as string
+	statusCode: INT, new status as int, 0: done
+	result: OBJECT, result object
+	'''
+	StatusCallbackResponse = namedtuple('StatusCallbackResponse',
+		['changed', 'status', 'statusCode', 'result'])
+
+	class TaskState:
+		'''TaskState: Helper object to keep track of task states
+
+		processed: BOOL, True if state change was processed
+		status: STRING, current status as string
+		statusCode: INT, current status as int, -1: unspecified, 0: done
+		result: OBJECT, result object for current state
+		'''
+		def __init__(self,
+				processed=True,
+				status=None,
+				statusCode=CBSC_STATUS_UNSPECIFIED,
+				result=None):
+			self.processed = processed
+			self.status = status
+			self.statusCode = statusCode
+			self.result = result
+
+		def __str__(self):
+			return '<TaskState pr: %s, st: %s, stc: %i, r: %s>'%(
+				self.processed,self.status,self.statusCode,self.result)
+		def __repr__(self):
+			return self.__str__()
+
+		def callbackResponse(self):
+			'''Generates StatusCallbackResponse from current state'''
+			return PupilCommunication.StatusCallbackResponse(
+					not self.processed,
+					self.status,
+					self.statusCode,
+					self.result)
+
 	def __init__(self, g_pool, cmd_pipe, event_queue):
 		self.g_pool = g_pool
 		self.cmd_pipe = cmd_pipe
 		self.event_queue = event_queue
-		self.tasks = []
-		self.answers = {}
 		self.recent_events = None
+		self.states = {}
 
-	def __create_status_callback():
-		pass
+	def __create_status_callback(self,task_id):
+		if task_id in self.states:
+			raise Exception('Task with id %s already existing.'%task_id)
 
-	def __create_finish_callback(self,task_id,blocking=False):
-		self.tasks.append(task_id)
-		self.answers[task_id] = None
+		# create entry for task_id
+		self.states[task_id] = PupilCommunication.TaskState(True)
 
-		def finished_callback(blocking=blocking):
-			'''
-			poll all available messages and return finish state
-			'''
+		def status_callback(blocking=True):	
 
-			# Create named tuple for returning multiple values
-			Response = namedtuple('FinishedCallbackResponse',['finished','successful','answer'])
+			# Task not present anymore. 
+			if not task_id in self.states:
+				return PupilCommunication.StatusCallbackResponse(
+					True,'unspecified',CBSC_STATUS_UNSPECIFIED,None)
 
-			# check if task is done and answer is still unprocessed
-			# return immediatly if True
-			answer = None
-			successful = False
-			if not task_id in self.tasks:
-				if task_id in self.answers:
-					answer = self.answers[task_id]
-					del self.answers[task_id]
-				logger.debug('Task %s already done'%task_id)
-				return Response(True, answer)
+			current_state = self.states[task_id]
 
-			# loop runs until specific task was answered
+			# unprocessed status change.
+			if not current_state.processed:
+				resp = current_state.callbackResponse()
+				# cleanup if task is done or unspecified:
+				if resp.statusCode <= 0:
+					del self.states[task_id]
+				# task not done, but current state is processed
+				else:
+					current_state.processed =  True
+				return resp
+
+			# current state was processed already; looking for updates
 			while self.cmd_pipe and (self.cmd_pipe.poll() or blocking):
 				msg = self.cmd_pipe.recv()
-				resp_id = msg['id']
-				
-				successful = msg.get('successful', False)
-				answer = msg.get('answer', None)
+				resp_id = msg.get('id',None)
+				status = msg.get('status', 'unspecified')
+				statusCode = msg.get('statusCode', CBSC_STATUS_UNSPECIFIED)
+				result = msg.get('result', None)
 
-				if resp_id in self.tasks:
-					self.tasks.remove(resp_id)
-					self.answers[resp_id] = answer
+				# no response id found; ignore message
+				if not resp_id:
+					continue
+
+				# update corresponding state
+				# (including target state where resp_id == task_id,
+				#  see case below)
+				if resp_id in self.states:
+					resp_state = self.states[resp_id]
+					resp_state.processed = False
+					resp_state.status = status
+					resp_state.statusCode = statusCode
+					resp_state.result = result
+
+				# check if this callback has responsibility for found message
 				if resp_id == task_id:
-					del self.answers[resp_id]
-					break
-				# Reset answer
-				answer = None
-				logger.debug("Task [%s]: %s"%(resp_id, answer))
-			return Response(not task_id in self.tasks, successful, answer)
+					resp = current_state.callbackResponse()
+					# cleanup if task is done or unspecified:
+					if resp.statusCode <= 0:
+						del self.states[task_id]
+					# task not done, but current state is processed
+					else:
+						current_state.processed =  True
+					return resp
 
-		return finished_callback
+			# No state update found
+			return current_state.callbackResponse()
+			#-- End callback definition
+		return status_callback
 
 	def __poll_event_queue(self):
 		'''__poll_event_queue
@@ -145,9 +217,9 @@ class PupilCommunication:
 
 		return None
 
-	def __startProcedure(self, command, blocking=False,context=None):
+	def __startProcedure(self, command,context=None):
 		task_id = uuid4()
-		cb = self.__create_finish_callback(task_id,blocking)
+		cb = self.__create_status_callback(task_id)
 		now = self.g_pool.capture.get_timestamp()
 		msg = {
 			'cmd':command,
@@ -161,17 +233,17 @@ class PupilCommunication:
 		try:
 			self.cmd_pipe.send(msg)
 		except AttributeError as e:
-			logger.error('record<%s,%s>: %s'%(blocking,context,e))
+			logger.error('record<%s>: %s'%(context,e))
 		except ValueError as e:
 			msg['context'] = None
-			logger.error('record<%s,%s>: %s'%(blocking,context,e))
+			logger.error('record<%s>: %s'%(context,e))
 			self.cmd_pipe.send(msg)
 		except Exception as e:
 			logger.warning(e)
 
 		return cb
 
-	def _stopProcedure(self, command, blocking=False, context=False):
+	def _stopProcedure(self, command, context=False):
 		now = self.g_pool.capture.get_timestamp()
 		msg = {
 			'cmd':command,
@@ -182,14 +254,13 @@ class PupilCommunication:
 		except Exception as e:
 			logger.warning(e)
 
-	def startRecording(self,session_name,blocking=False):
+	def startRecording(self,session_name):
 		'''startRecording
 		Starts recording.
 		Returns finished_callback which returns True
 			if the calibration has finished
-		blocking decides if finished_callback blocks until done or not
 		'''
-		return self.__startProcedure(START_RECORDING, blocking, session_name)
+		return self.__startProcedure(START_RECORDING, session_name)
 
 	def stopRecording(self):
 		'''stopRecording
@@ -199,14 +270,13 @@ class PupilCommunication:
 		'''
 		self._stopProcedure(STOP_RECORDING)
 
-	def startCalibration(self,blocking=False,context=None):
+	def startCalibration(self,context=None):
 		'''startCalibration
 		Starts calibration.
 		Returns finished_callback which returns True
 			if the calibration has finished
-		blocking decides if finished_callback blocks until done or not
 		'''
-		return self.__startProcedure(START_CALIBRATION, blocking, context)
+		return self.__startProcedure(START_CALIBRATION, context)
 
 	def stopCalibration(self):
 		'''stopCalibration
