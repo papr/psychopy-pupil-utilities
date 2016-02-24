@@ -1,4 +1,11 @@
-import sys, os, platform, logging, colorlog
+import sys, os, platform, time
+from ctypes import c_double
+
+if platform.system() == 'Darwin':
+	from billiard import Process, Pipe, Queue, forking_enable
+	forking_enable(0)
+else:
+	from multiprocessing import Process, Pipe, Queue
 
 from pupil_communication import main as pupil_communication_main
 from const import (
@@ -16,6 +23,9 @@ from const import (
 	EXIT,
 
 	# callback statuscodes
+	CBSC_CALIBRATION_MARKER_MOVED_TOO_QUICKLY,
+	CBSC_CALIBRATION_STEADY_MARKER_FOUND,
+	CBSC_CALIBRATION_SAMPLE_COMPLETED,
 	CBSC_CALIBRATION_SUCCESSFULL,
 	CBSC_CALIBRATION_FAILED,
 	CBSC_RECORDING_STARTED,
@@ -25,6 +35,7 @@ from const import (
 
 from pyglui import ui
 from plugin import Plugin
+import logging, colorlog
 
 __version__ = '0.0.2'
 
@@ -49,12 +60,6 @@ ch.setFormatter(colorlog.ColoredFormatter(
 	style='%'
 ))
 logger.addHandler(ch)
-
-if platform.system() == 'Darwin' and getattr(sys, 'frozen', False):
-	from billiard import Process, Pipe, Queue, Value, forking_enable
-	forking_enable(0)
-else:
-	from multiprocessing import Process, Pipe, Queue
 
 class Script_Loader(Plugin):
 	"""Script Loader Plugin
@@ -156,7 +161,8 @@ class Script_Loader(Plugin):
 		self.pollCommandPipe()
 		if self.event_queue and not self.event_queue.full():
 			try:
-				self.event_queue.put_nowait(events)
+				pass
+				#self.event_queue.put_nowait(events)
 			except Queue.Full:
 				pass
 			except IOError:
@@ -166,11 +172,33 @@ class Script_Loader(Plugin):
 				logger.error('Sending events failed: %s'%e)
 	
 	def on_notify(self,notification):
+		logger.debug(notification['subject'])
 		if self.current_actions[ACTION_CALIBRATION]:
 
 			resp = None
 			task_id = self.current_actions[ACTION_CALIBRATION]
-			if notification['subject'] == 'calibration_successful':
+			if notification['subject'] == 'calibration marker found':
+				resp = {
+					'id': task_id,
+					'status': 'calibration marker found',
+					'statusCode': CBSC_CALIBRATION_STEADY_MARKER_FOUND,
+					'result': None
+				}
+			elif notification['subject'] == 'calibration marker sample completed':
+				resp = {
+					'id': task_id,
+					'status': 'calibration marker sample completed',
+					'statusCode': CBSC_CALIBRATION_SAMPLE_COMPLETED,
+					'result': None
+				}
+			elif notification['subject'] == 'calibration marker moved too quickly':
+				resp = {
+					'id': task_id,
+					'status': 'calibration marker moved too quickly',
+					'statusCode': CBSC_CALIBRATION_MARKER_MOVED_TOO_QUICKLY,
+					'result': None
+				}
+			elif notification['subject'] == 'calibration_successful':
 				resp = {
 					'id': task_id,
 					'status': 'calibration successful',
@@ -185,6 +213,8 @@ class Script_Loader(Plugin):
 					'statusCode': CBSC_CALIBRATION_FAILED,
 					'result': notification['reason']
 				}
+			else:
+				logger.warning('Unprocessed notification: %s'%notification)
 
 			if resp and self.script_pipe:
 				# cleanup
@@ -216,6 +246,8 @@ class Script_Loader(Plugin):
 					'statusCode': CBSC_RECORDING_STARTED,
 					'result': notification.get('rec_path','No recording path returned')
 				}
+			else:
+				logger.warning('Unprocessed notification: %s'%notification)
 
 			if resp and self.script_pipe:
 				# cleanup
@@ -254,14 +286,14 @@ class Script_Loader(Plugin):
 			cmd_script_end,self.script_pipe = Pipe(True)
 			self.event_queue = Queue()
 			
+			time_dif = self.g_pool.capture.get_timestamp() - time.time()
 			self.script_process = Process(
 				target=pupil_communication_main,
-				args=(self.g_pool, script_path, cmd_script_end, self.event_queue)
+				args=(script_path, cmd_script_end, self.event_queue, time_dif)
 			)
 			self.script_process.start()
-			
+
 			cmd_script_end.close()
-			#cmd_event_end.close()
 
 			self.running = True
 			logger.info('Starting %s'%script)
@@ -373,7 +405,6 @@ class Script_Loader(Plugin):
 			#logger.debug('on_start_cal: %s'%task_id)
 
 	def on_stop_calibration(self):
-		#logger.debug('on_stop_cal: %s'%self.current_actions[ACTION_CALIBRATION])
 		self.notify_all({
 			'subject': 'cal_should_stop'
 		})

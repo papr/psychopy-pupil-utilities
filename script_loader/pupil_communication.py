@@ -1,11 +1,11 @@
-import os, sys, platform, logging, colorlog
+import os, sys, platform, logging, colorlog, time
 from uuid import uuid4
 from collections import namedtuple
-if platform.system() == 'Darwin' and getattr(sys, 'frozen', False):
-	from billiard import Process, Pipe, Queue, forking_enable
+if platform.system() == 'Darwin':
+	from billiard import Process, Pipe, Queue, freeze_support, forking_enable
 	forking_enable(0)
 else:
-	from multiprocessing import Process, Pipe
+	from multiprocessing import Process, Pipe, Queue, freeze_support
 
 from const import (
 	# commands
@@ -88,7 +88,7 @@ class PupilCommunication:
 		def __repr__(self):
 			return self.__str__()
 
-		def callbackResponse(self):
+		def callback_response(self):
 			'''Generates StatusCallbackResponse from current state'''
 			return PupilCommunication.StatusCallbackResponse(
 					not self.processed,
@@ -96,8 +96,8 @@ class PupilCommunication:
 					self.statusCode,
 					self.result)
 
-	def __init__(self, g_pool, cmd_pipe, event_queue):
-		self.g_pool = g_pool
+	def __init__(self, cmd_pipe, event_queue, time_dif):
+		self.time_func = lambda: time.time() + time_dif
 		self.cmd_pipe = cmd_pipe
 		self.event_queue = event_queue
 		self.recent_events = None
@@ -121,7 +121,7 @@ class PupilCommunication:
 
 			# unprocessed status change.
 			if not current_state.processed:
-				resp = current_state.callbackResponse()
+				resp = current_state.callback_response()
 				# cleanup if task is done or unspecified:
 				if resp.statusCode <= 0:
 					del self.states[task_id]
@@ -154,7 +154,7 @@ class PupilCommunication:
 
 				# check if this callback has responsibility for found message
 				if resp_id == task_id:
-					resp = current_state.callbackResponse()
+					resp = current_state.callback_response()
 					# cleanup if task is done or unspecified:
 					if resp.statusCode <= 0:
 						del self.states[task_id]
@@ -164,7 +164,7 @@ class PupilCommunication:
 					return resp
 
 			# No state update found
-			return current_state.callbackResponse()
+			return current_state.callback_response()
 			#-- End callback definition
 		return status_callback
 
@@ -196,7 +196,7 @@ class PupilCommunication:
 	def trigger(self,frameid=None,context=None):
 		'''trigger
 		'''
-		now = self.g_pool.capture.get_timestamp()
+		now = self.time_func()
 		msg = {
 			'cmd':TRIGGER,
 			'timestamp':now,
@@ -220,7 +220,7 @@ class PupilCommunication:
 	def __startProcedure(self, command,context=None):
 		task_id = uuid4()
 		cb = self.__create_status_callback(task_id)
-		now = self.g_pool.capture.get_timestamp()
+		now = self.time_func()
 		msg = {
 			'cmd':command,
 			'timestamp':now,
@@ -244,7 +244,7 @@ class PupilCommunication:
 		return cb
 
 	def _stopProcedure(self, command, context=False):
-		now = self.g_pool.capture.get_timestamp()
+		now = self.time_func()
 		msg = {
 			'cmd':command,
 			'timestamp':now
@@ -288,9 +288,9 @@ class PupilCommunication:
 
 pupil_helper = None
 
-def main(g_pool, script, cmd_pipe, event_queue):
+def main(script, cmd_pipe, event_queue, time_dif):
 	global pupil_helper
-	pupil_helper = PupilCommunication(g_pool, cmd_pipe, event_queue)
+	pupil_helper = PupilCommunication(cmd_pipe, event_queue, time_dif)
 	head, tail = os.path.split(script)
 	sys.path.append(head)
 	name, ext = tail.rsplit('.',1)
