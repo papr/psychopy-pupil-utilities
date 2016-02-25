@@ -37,7 +37,7 @@ from pyglui import ui
 from plugin import Plugin
 import logging, colorlog
 
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 
 logger = colorlog.getLogger(__name__)
 logger.propagate = False
