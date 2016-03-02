@@ -50,8 +50,6 @@ class Pupil_Sync_Node(object):
         self.name = name
         self.group = group
         self.group_members = {}
-        self.menu = None
-        self.group_menu = None
         self._time_grandmaster = time_grandmaster
 
         #variables for the time sync logic
@@ -70,13 +68,13 @@ class Pupil_Sync_Node(object):
         self.timebase = 0.0 #this is the time offset
 
 
-    def notify_all(notification):
+    def on_notify(self,notification):
         '''
         this get called when a notification is received. Overwrite as needed.
         '''
         print notification
 
-    def on_notify(self,notification):
+    def notify_all(self,notification):
         '''
         call this to notify other sync nodes use notfication format and add network_propagate:True
         '''
@@ -144,7 +142,6 @@ class Pupil_Sync_Node(object):
             while self.thread_pipe:
                 sleep(.01)
         self.group_members = {}
-        self.update_gui()
         self.thread_pipe = zhelper.zthread_fork(self.context, self._thread_loop)
 
 
@@ -325,7 +322,7 @@ class Pupil_Sync_Node(object):
                 notification['sync_node_name'] = name
                 notification['sync_node_uuid'] = uuid
                 # Finally we fire it.
-                self.notify_all(notification)
+                self.on_notify(notification)
         else:
             logger.warning('Received unknown message pattern. Payload:"%s"'%msg)
 
@@ -344,7 +341,6 @@ class Pupil_Sync_Node(object):
         """
         if self.time_sync_node:
             self.time_sync_node.terminate()
-        self.deinit_gui()
         self.thread_pipe.send(exit_thread)
         while self.thread_pipe:
             sleep(.01)
@@ -354,6 +350,7 @@ class Pupil_Sync_Node(object):
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     node = Pupil_Sync_Node(name="Script Node",time_grandmaster=False)
+    node = Pupil_Sync_Node(name="Pupil Sync Example Node",time_grandmaster=False)
     while True:
         sleep(1)
         print node.sync_status_info(),node.get_time()
