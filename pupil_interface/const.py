@@ -4,15 +4,21 @@
 #  < 0: Task failed
 
 # calibration callback events
-CALIBRATION_MARKER_MOVED_TOO_QUICKLY = CAL_MMTQ = 13
-CALIBRATION_STEADY_MARKER_FOUND      = CAL_SMF  = 12
-CALIBRATION_SAMPLE_COMPLETED         = CAL_SC   = 11
-CALIBRATION_SUCCESSFULL              = CAL_SUC  = 10
-CALIBRATION_FAILED                   = CAL_FAIL = -11
+EVENT_CALIBRATION_MARKER_MOVED_TOO_QUICKLY = CAL_MMTQ = 13
+EVENT_CALIBRATION_STEADY_MARKER_FOUND      = CAL_SMF  = 12
+EVENT_CALIBRATION_SAMPLE_COMPLETED         = CAL_SC   = 11
+EVENT_CALIBRATION_SUCCESSFULL              = CAL_SUC  = 10
+EVENT_CALIBRATION_FAILED                   = CAL_FAIL = -11
 
 # recording callback events
-RECORDING_STARTED                    = REC_STA  = 21
-RECORDING_STOPPED                    = REC_STO  = 20
-RECORDING_SOURCE_PUPIL_INTERFACE     = REC_SRC  = 'Pupil Interface'
+EVENT_RECORDING_STARTED                    = REC_STA  = 21
+EVENT_RECORDING_STOPPED                    = REC_STO  = 20
+RECORDING_SOURCE_PUPIL_INTERFACE           = REC_SRC  = 'Pupil Interface'
 
-RECEIVED_GAZE_POSITIONS              = RCV_GAZE = 30
+EVENT_RECEIVED_GAZE_POSITIONS              = RCV_GAZE = 30
+
+EVT_MAP = {}
+for name in dir():
+    if name.startswith('EVENT_'):
+        value = locals()[name]
+        EVT_MAP[value] = name
