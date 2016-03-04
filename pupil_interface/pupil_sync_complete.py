@@ -171,7 +171,6 @@ class Pupil_Sync_Node(object):
         poller.register(back, zmq.POLLIN)
         def wake_up():
             #on app close this timer calls a closed socket. We simply catch it here.
-
             try:
                 front.send('wake_up')
             except Exception as e:
@@ -349,7 +348,6 @@ class Pupil_Sync_Node(object):
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
-    node = Pupil_Sync_Node(name="Script Node",time_grandmaster=False)
     node = Pupil_Sync_Node(name="Pupil Sync Example Node",time_grandmaster=False)
     while True:
         sleep(1)
