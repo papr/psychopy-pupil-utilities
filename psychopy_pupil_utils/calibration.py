@@ -1,4 +1,4 @@
-from psychopy import core, visual, event
+from psychopy import core, visual
 from psychopy.visual.circle import Circle
 from random import shuffle
 
@@ -50,7 +50,11 @@ class PupilStopMarker(Circle):
         c = Circle(win, **kwargs)
         return c
 
-    def drawAtCalibrationPosition(self,(x,y)):
+    def drawAtCalibrationPosition(self,(x,y),offset=None):
+        '''
+        offset moves stim in direction of window center if stim center + offset
+        is out of window.
+        '''
         size = self.win.size
         pos = list(size)
         
@@ -58,15 +62,15 @@ class PupilStopMarker(Circle):
         pos[0] = pos[0] * x - size[0]/2.
         pos[1] = pos[1] * y - size[1]/2.
         
-        r = self.radius
-        if pos[0] - r < -size[0]/2:
-            pos[0] += -size[0]/2 - (pos[0] - r)
-        if pos[0] + r > size[0]/2:
-            pos[0] += size[0]/2 - (pos[0] + r)
-        if pos[1] - r < -size[1]/2:
-            pos[1] += -size[1]/2 - (pos[1] - r)
-        if pos[1] + r > size[1]/2:
-            pos[1] += size[1]/2 - (pos[1] + r)
+        if offset:
+            if pos[0] - offset < -size[0]/2:
+                pos[0] += -size[0]/2 - (pos[0] - offset)
+            if pos[0] + offset > size[0]/2:
+                pos[0] += size[0]/2 - (pos[0] + offset)
+            if pos[1] - offset < -size[1]/2:
+                pos[1] += -size[1]/2 - (pos[1] - offset)
+            if pos[1] + offset > size[1]/2:
+                pos[1] += size[1]/2 - (pos[1] + offset)
 
         self.pos = tuple(pos)
         self.draw()
@@ -79,37 +83,13 @@ def randomizedNinePointCalibrationPositions():
     shuffle(pos)
     return pos
 
-
 class PupilCalibrationMarker(PupilStopMarker):
     def _genSubCircles(self,win,**kwargs):
         circles = super(PupilCalibrationMarker,self)._genSubCircles(win,**kwargs)
-        circles.append(self._subCircleForScale(win,.75, True, **kwargs))
+        circles.append(self._subCircleForScale(win,.5, True, **kwargs))
         return circles
 
-
-if __name__ == '__main__':
-    win = visual.Window([2560,1440],fullscr=True,allowGUI=True, screen=0, units='pix')
-
-    c = PupilCalibrationMarker(win,radius=50,pos=(0.,0.))
-    s = PupilStopMarker(win,radius=50,pos=(0.,0.))
-
-    intro_text = visual.TextStim(win, text='Hit any key to start calibration')
-    intro_text.draw()
-    win.flip()
-    event.waitKeys()
-
-    # self-responsible drawing
-    cal_pos = randomizedNinePointCalibrationPositions()
-    for pos in cal_pos:
-        c.drawAtCalibrationPosition(pos)
-        win.flip()
-        event.waitKeys()
-
-    # stop calibration
-    s.drawAtCalibrationPosition((.5,.5))
-    win.flip()
-    event.waitKeys()
-
-    win.close()
-
-    core.quit()
+__all__ = [ 'PupilCalibrationMarker',
+            'PupilStopMarker',
+            'ninePointCalibrationPositions',
+            'randomizedNinePointCalibrationPositions']
