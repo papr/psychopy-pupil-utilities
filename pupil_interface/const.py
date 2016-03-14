@@ -17,6 +17,14 @@ RECORDING_SOURCE_PUPIL_INTERFACE           = REC_SRC  = 'Pupil Interface'
 
 EVENT_RECEIVED_GAZE_POSITIONS              = RCV_GAZE = 30
 
+EVENT_NET_NODE_JOINED_GROUP                = NET_JOIN = 41
+EVENT_NET_NODE_EXITED_GROUP                = NET_EXIT = 42
+
+EVENT_NET_CONNECTED                        = NET_CONN = 51
+EVENT_NET_DISCONNECTED                     = NET_DISC = 52
+
+EVENT_TIMEOUT                              = TIME_OUT = -01
+
 EVT_MAP = {}
 for name in dir():
     if name.startswith('EVENT_'):

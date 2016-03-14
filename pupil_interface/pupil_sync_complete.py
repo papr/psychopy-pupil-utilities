@@ -16,6 +16,7 @@ from time import sleep,time
 from threading import Timer
 import logging
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 from network_time_sync import Clock_Sync_Master,Clock_Sync_Follower
 
@@ -162,10 +163,10 @@ class Pupil_Sync_Node(object):
         n = Pyre(self.name)
         n.join(self.group)
         n.start()
+
         poller = zmq.Poller()
         poller.register(pipe, zmq.POLLIN)
         poller.register(n.socket(), zmq.POLLIN)
-
 
         front,back = zhelper.zcreate_pipe(context)
         poller.register(back, zmq.POLLIN)
@@ -193,72 +194,15 @@ class Pupil_Sync_Node(object):
                 continue
 
             if back in items and items[back] == zmq.POLLIN:
-                back.recv()
-                #timeout events are used for pupil sync.
-                #annouce masterhood every interval time:
-                if isinstance(self.time_sync_node,Clock_Sync_Master):
-                    n.shouts(self.group, SYNC_TIME_MASTER_ANNOUNCE+"%s"%self.clock_master_worthiness()+msg_delimeter+'%s'%self.time_sync_node.port)
-                elif self._time_grandmaster:
-                    self.time_sync_node = Clock_Sync_Master(time_fn=self.get_time)
-                    n.shouts(self.group, SYNC_TIME_MASTER_ANNOUNCE+"%s"%self.clock_master_worthiness()+msg_delimeter+'%s'%self.time_sync_node.port)
-
-                # synced slave: see if we should become master if we dont hear annoncement within time.
-                elif isinstance(self.time_sync_node,Clock_Sync_Follower) and not self.time_sync_node.offset_remains:
-                    if self.get_unadjusted_time()-self.last_master_announce > self.time_sync_wait_interval_short:
-                        self.time_sync_node.terminate()
-                        self.time_sync_node = Clock_Sync_Master(time_fn=self.get_time)
-                        n.shouts(self.group, SYNC_TIME_MASTER_ANNOUNCE+"%s"%self.clock_master_worthiness()+msg_delimeter+'%s'%self.time_sync_node.port)
-
-                # unsynced slave or none should wait longer but eventually take over
-                elif self.get_unadjusted_time()-self.last_master_announce > self.time_sync_wait_interval_long:
-                    if self.time_sync_node:
-                        self.time_sync_node.terminate()
-                    self.time_sync_node = Clock_Sync_Master(time_fn=self.get_time)
-                    n.shouts(self.group, SYNC_TIME_MASTER_ANNOUNCE+"%s"%self.clock_master_worthiness()+msg_delimeter+'%s'%self.time_sync_node.port)
-
-                t = Timer(self.time_sync_announce_interval, wake_up)
-                t.daemon = True
-                t.start()
+                self._handle_wake_up(back,n,wake_up)
 
 
             if pipe in items and items[pipe] == zmq.POLLIN:
-                message = pipe.recv()
-                # message to quit
-                if message.decode('utf-8') == exit_thread:
+                if self._handle_internal(pipe,n):
                     break
-                else:
-                    logger.debug("Shout '%s' to '%s' " %(message,self.group))
-                    n.shouts(self.group, message)
+
             if n.socket() in items and items[n.socket()] == zmq.POLLIN:
-                cmds = n.recv()
-                msg_type = cmds.pop(0)
-                msg_type = msg_type.decode('utf-8')
-                if msg_type == "SHOUT":
-                    uuid,name,group,msg = cmds
-                    logger.debug("'%s' shouts '%s'."%(name,msg))
-                    self._handle_msg(uuid,name,msg,n)
-
-                elif msg_type == "WHISPER":
-                    uuid,name,msg = cmds
-                    logger.debug("'%s/' whispers '%s'."%(name,msg))
-                    self._handle_msg_whisper(uuid,name,msg,n)
-
-                elif msg_type == "JOIN":
-                    uuid,name,group = cmds
-                    if group == self.group:
-                        self.group_members[uuid] = name
-
-                elif msg_type == "EXIT":
-                    uuid,name = cmds
-                    try:
-                        del self.group_members[uuid]
-                    except KeyError:
-                        pass
-                # elif msg_type == "LEAVE":
-                #     uuid,name,group = cmds
-                # elif msg_type == "ENTER":
-                #     uuid,name,headers,ip = cmds
-                #     logger.warning((uuid,'name',headers,ip))
+                self._handle_network(n)
             else:
                 pass
 
@@ -267,6 +211,79 @@ class Pupil_Sync_Node(object):
         self.thread_pipe = None
         n.stop()
 
+    def _handle_internal(self,socket,network):
+        message = socket.recv()
+        # message to quit
+        if message.decode('utf-8') == exit_thread:
+            return True
+        else:
+            logger.debug("Shout '%s' to '%s' " %(message,self.group))
+            network.shouts(self.group, message)
+            return False
+
+
+    def _handle_network(self,network):
+        cmds = network.recv()
+        msg_type = cmds.pop(0)
+        msg_type = msg_type.decode('utf-8')
+        if msg_type == "SHOUT":
+            uuid,name,group,msg = cmds
+            logger.debug("'%s' shouts '%s'."%(name,msg))
+            self._handle_msg(uuid,name,msg,network)
+
+        elif msg_type == "WHISPER":
+            uuid,name,msg = cmds
+            logger.debug("'%s/' whispers '%s'."%(name,msg))
+            self._handle_msg_whisper(uuid,name,msg,network)
+
+        elif msg_type == "JOIN":
+            uuid,name,group = cmds
+            if group == self.group:
+                self.group_members[uuid] = name
+
+        elif msg_type == "EXIT":
+            uuid,name = cmds
+            try:
+                del self.group_members[uuid]
+            except KeyError:
+                cmds = [uuid,name,None]
+            else:
+                cmds = [uuid,name,self.group]
+        # elif msg_type == "LEAVE":
+        #     uuid,name,group = cmds
+        # elif msg_type == "ENTER":
+        #     uuid,name,headers,ip = cmds
+        #     logger.warning((uuid,'name',headers,ip))
+        return (msg_type, cmds)
+
+
+    def _handle_wake_up(self,socket,network,wake_up_fun):
+        socket.recv()
+        #timeout events are used for pupil sync.
+        #annouce masterhood every interval time:
+        if isinstance(self.time_sync_node,Clock_Sync_Master):
+            network.shouts(self.group, SYNC_TIME_MASTER_ANNOUNCE+"%s"%self.clock_master_worthiness()+msg_delimeter+'%s'%self.time_sync_node.port)
+        elif self._time_grandmaster:
+            self.time_sync_node = Clock_Sync_Master(time_fn=self.get_time)
+            network.shouts(self.group, SYNC_TIME_MASTER_ANNOUNCE+"%s"%self.clock_master_worthiness()+msg_delimeter+'%s'%self.time_sync_node.port)
+
+        # synced slave: see if we should become master if we dont hear annoncement within time.
+        elif isinstance(self.time_sync_node,Clock_Sync_Follower) and not self.time_sync_node.offset_remains:
+            if self.get_unadjusted_time()-self.last_master_announce > self.time_sync_wait_interval_short:
+                self.time_sync_node.terminate()
+                self.time_sync_node = Clock_Sync_Master(time_fn=self.get_time)
+                network.shouts(self.group, SYNC_TIME_MASTER_ANNOUNCE+"%s"%self.clock_master_worthiness()+msg_delimeter+'%s'%self.time_sync_node.port)
+
+        # unsynced slave or none should wait longer but eventually take over
+        elif self.get_unadjusted_time()-self.last_master_announce > self.time_sync_wait_interval_long:
+            if self.time_sync_node:
+                self.time_sync_node.terminate()
+            self.time_sync_node = Clock_Sync_Master(time_fn=self.get_time)
+            network.shouts(self.group, SYNC_TIME_MASTER_ANNOUNCE+"%s"%self.clock_master_worthiness()+msg_delimeter+'%s'%self.time_sync_node.port)
+
+        t = Timer(self.time_sync_announce_interval, wake_up_fun)
+        t.daemon = True
+        t.start()
 
     def _handle_msg(self,uuid,name,msg,node):
         #Clock Sync master announce logic
