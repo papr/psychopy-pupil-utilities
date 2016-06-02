@@ -32,14 +32,6 @@ from const import *
 
 logging.basicConfig(level=logging.INFO)
 
-EVENT_MAP = {}
-print("Event names:")
-for name in dir(zmq):
-    if name.startswith('EVENT_'):
-        value = getattr(zmq, name)
-        print("%21s : %4i" % (name, value))
-        EVENT_MAP[value] = name
-
 class Communicator(Pupil_Sync_Node):
     '''Provide simple interface to Pupil
 
@@ -95,7 +87,7 @@ class Communicator(Pupil_Sync_Node):
     def startRecording(self,session_name="Unnamed session",callback=None):
         if callback: self.recording_callback = callback
         self.notify_all({
-            'subject': 'rec_should_start',
+            'subject': 'should_start_recording',
             'source': RECORDING_SOURCE_PUPIL_INTERFACE,
             'session_name': session_name,
             'network_propagate': True
@@ -103,21 +95,20 @@ class Communicator(Pupil_Sync_Node):
     def stopRecording(self,callback=None):
         if callback: self.recording_callback = callback
         self.notify_all({
-            'subject': 'rec_should_stop',
+            'subject': 'should_stop_recording',
             'source': RECORDING_SOURCE_PUPIL_INTERFACE,
             'network_propagate': True
         })
-    def startCalibration(self,callback=None,context=None):
-        logger.debug('startCalibration(%s, %s)'%(callback,context))
+    def startCalibration(self,callback=None):
         if callback: self.calibration_callback = callback
         self.notify_all({
-            'subject': 'cal_should_start',
+            'subject': 'should_start_calibration',
             'network_propagate': True
         })
     def stopCalibration(self,callback=None):
         if callback: self.calibration_callback = callback
         self.notify_all({
-            'subject': 'cal_should_stop',
+            'subject': 'should_stop_calibration',
             'network_propagate': True
         })
 
@@ -193,8 +184,6 @@ class Communicator(Pupil_Sync_Node):
         if timeout != None:
             deadline = self.get_time() + timeout
         while True:
-            if timeout and timeout <= 0:
-                break
             processed = self.checkEvents()
             for e,obj in processed:
                 event_pool[e] = obj
@@ -206,6 +195,8 @@ class Communicator(Pupil_Sync_Node):
                 # if waitForAll: test if all events were found
                 if not events or (not waitForAll and foundAtLeastOneSpecifiedEvent):
                     return event_pool
+            if timeout and timeout <= 0:
+                break
             if timeout != None:
                 timeout = deadline - self.get_time()
             # blocks thread until new events arrive
@@ -228,36 +219,46 @@ class Communicator(Pupil_Sync_Node):
         self.wait_event.clear()
 
     def _handle_notification(self,notification):
+        '''
+        Looks for specific notifications to trigger matching events.
+
+        `notification` is the received notification dictionary.
+
+        Returns event constant.
+
+        Can be overwritten to support custom event notifications.
+        Should call super(). If super() returns `None` the notification was not recognized.
+        '''
         event = None
         ts = notification.get('timestamp',None)
 
         if notification.get('subject',None) == 'calibration marker found':
             event = self._callCalibrationCallback(CAL_SMF,ts, None)
-        
+
         elif notification.get('subject',None) == 'calibration marker sample completed':
             event = self._callCalibrationCallback(CAL_SC,ts, None)
-        
+
         elif notification.get('subject',None) == 'calibration marker moved too quickly':
             event = self._callCalibrationCallback(CAL_MMTQ,ts, None)
-        
+
         elif notification.get('subject',None) == 'calibration_successful':
             method = notification['method']
             event = self._callCalibrationCallback(CAL_SUC,ts, method)
-        
+
         elif notification.get('subject',None) == 'calibration_failed':
             reason = notification['reason']
             event = self._callCalibrationCallback(CAL_FAIL,ts, reason)
 
-        elif (notification.get('subject',None) == 'rec_started' and 
+        elif (notification.get('subject',None) == 'rec_started' and
             notification.get('source',None) != RECORDING_SOURCE_PUPIL_INTERFACE):
             event = self._callRecordingCallback(REC_STA, ts, {
                 'rec_path': notification['rec_path'],
                 'session_name': notification['session_name']
             })
 
-        elif (notification.get('subject',None) == 'rec_stopped' and 
+        elif (notification.get('subject',None) == 'rec_stopped' and
             notification.get('source',None) != RECORDING_SOURCE_PUPIL_INTERFACE):
-            event = self._callRecordingCallback(RECORDING_STOPPED, ts, {
+            event = self._callRecordingCallback(REC_STO, ts, {
                 'rec_path': notification['rec_path']
             })
         return event
@@ -271,6 +272,12 @@ class Communicator(Pupil_Sync_Node):
         return (msg_type, cmds)
 
     def _sub_loop(self,context,pipe):
+        '''
+        Subscription Thread Loop
+
+        Connects to the Pupil Server given by `sub_addr:sub_port`.
+        Adds
+        '''
         socket = context.socket(zmq.SUB)
         network_mon = socket.get_monitor_socket()
         socket.connect(self.sub_addr+':'+self.sub_port)
@@ -295,6 +302,7 @@ class Communicator(Pupil_Sync_Node):
                 mon_msg = recv_monitor_message(network_mon)
                 if mon_msg['event'] == zmq.EVENT_CONNECTED:
                     self.queueEvent({'net_subscription':mon_msg})
+                # TODO: disconnect event?
 
             # get socket events
             if socket in items and items[socket] == zmq.POLLIN:
