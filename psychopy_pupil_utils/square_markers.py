@@ -12,6 +12,9 @@ def marker_image_path(mID):
     return marker_loc_format%mID
 
 def _enumerateTuplesWithValues(values,remove_median=False):
+    '''
+    Pairs `values` entries element-wise
+    '''
     tuples = []
     for val1 in values:
         for val2 in values:
@@ -21,16 +24,21 @@ def _enumerateTuplesWithValues(values,remove_median=False):
     return tuples
 
 class SurfaceMarkers(BaseVisualStim,ContainerMixin):
-    """docstring for SurfaceMarkers"""
+    """docstring for SurfaceMarkers
+
+    5x5 grid -> grid_size: size / 5.
+    Border size: 1.2 * grid_size.
+    See note on https://github.com/pupil-labs/pupil/wiki/Pupil-capture#surface-tracking
+    """
     def __init__(self,
                  win,
-                 markerIDs=range(42,50),
+                 markerIDs=range(8),
                  screen_pos=_enumerateTuplesWithValues([0.0,0.5,1.0],remove_median=True),
                  size=100,
                  units="",
                  name=None,
                  autoLog=None):
-        self.border = 10
+        self.border = 1.2*size/5.
         if len(markerIDs) != 8:
             raise ValueError('markerIDs has to contain 8 ids in range of 0 - 63')
         super(SurfaceMarkers, self).__init__(win,units=units, name=name, autoLog=False)
@@ -40,12 +48,17 @@ class SurfaceMarkers(BaseVisualStim,ContainerMixin):
         self.screen_pos = screen_pos
         self._setMarkerPositions()
 
-    @property        
+    @property
     def size(self):
-        return self.marker_stim[0].size + self.border*2
+        return self.marker_stim[0].size
+
+    @property
+    def total_size(self):
+        return self.size + self.border*2
 
     @size.setter
     def size(self,value):
+        self.border = 1.2*value/5.
         for stim in self.marker_stim:
             stim.size = value
         for bg in self.marker_bg:
@@ -59,7 +72,7 @@ class SurfaceMarkers(BaseVisualStim,ContainerMixin):
             pos = list(size)
             pos[0] = pos[0] * x - size[0]/2.
             pos[1] = pos[1] * y - size[1]/2.
-            
+
             w,h = tuple(img.size / 2.0)
             w += self.border
             h += self.border
@@ -77,6 +90,16 @@ class SurfaceMarkers(BaseVisualStim,ContainerMixin):
             bg.height = img.size[1] + self.border*2
             bg.pos = tuple(pos)
 
+    def __setattr__(self, name, value):
+        propagate = ['autoDraw']
+        if name in propagate and hasattr(self,'marker_bg'):
+            for bg in self.marker_bg:
+                bg.__setattr__(name,value)
+        elif name in propagate and hasattr(self,'marker_bg'):
+            for stim in self.marker_stim:
+                stim.__setattr__(name,value)
+        else:
+            super(SurfaceMarkers,self).__setattr__(name,value)
 
     def draw(self):
         for bg in self.marker_bg:
