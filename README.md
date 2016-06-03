@@ -6,3 +6,5 @@ Plugin suite for running custom Python scripts interacting with [Pupil](https://
 - `pupil_interface` is a Python module which uses `Pupil Sync` to remote control `Pupil` software.
 
 - `script_loader [DEPRECATED]` is a `Pupil` plugin which starts custom Python script in a separate process and provides a simple interface for the script to remote control the `Pupil` software. Inter-process communication is done using pipes. This plugin is deprecated. `pupil_interface` provides the same functionality with the advantage to have network communication.
+
+**A full-size documentation can be found as part of my [Bachelor's thesis](Thesis.pdf).**
